@@ -1,0 +1,13 @@
+# Python 가상환경 및 캐시
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# 환경 변수 및 설정 파일 (API 키 유출 방지)
+.env
+.idea/
+.vscode/
+
+# 기타
+*.log
