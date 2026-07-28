@@ -20,6 +20,7 @@ class IngredientKnowledge(Base):
     __tablename__ = "ingredient_knowledge"
 
     id = Column(Integer, primary_key=True, index=True)
+    ingredient_id = Column(Integer, nullable=False, index=True)
     raw_name = Column(String(255), nullable=False, index=True)
     canonical_name = Column(String(255), nullable=False, index=True)
     category = Column(String(100), nullable=True)
