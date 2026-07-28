@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Python / Virtual Environment
 venv/
 __pycache__/
@@ -28,4 +27,3 @@ __pycache__/
 
 # 기타
 *.log
->>>>>>> f5779457e8f47b01271930ef17bec89b929a0394
