@@ -13,7 +13,6 @@ __pycache__/
 # IDE / Editor
 .vscode/
 .idea/
-=======
 # Python 가상환경 및 캐시
 venv/
 .venv/

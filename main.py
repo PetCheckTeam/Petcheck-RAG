@@ -1,4 +1,5 @@
 import os
+from contextlib import asynccontextmanager
 from typing import Optional
 
 from dotenv import load_dotenv
@@ -8,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from clova_client import get_clova_embedding
-from database import IngredientKnowledge, get_db
+from database import IngredientKnowledge, ensure_pgvector_extension, get_db
 from ingredient_extractor import extract_ingredients
 
 # .env 파일 로드
@@ -16,11 +17,6 @@ load_dotenv()
 
 # 필수 환경변수 존재 여부 체크
 REQUIRED_ENV_VARS = [
-    "DB_HOST",
-    "DB_PORT",
-    "DB_NAME",
-    "DB_USER",
-    "DB_PASSWORD",
     "CLOVA_STUDIO_API_KEY",
     "DATABASE_URL",
 ]
@@ -29,10 +25,17 @@ if missing_vars:
     print(f"⚠️ 경고: 다음 환경변수가 설정되지 않았습니다: {', '.join(missing_vars)}")
 
 
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    ensure_pgvector_extension()
+    yield
+
+
 app = FastAPI(
     title="PetCheck RAG Engine API",
     description="OCR 원료를 추출하고 Clova Embedding과 pgvector로 검색합니다.",
     version="1.0.0",
+    lifespan=lifespan,
 )
 
 
@@ -47,6 +50,7 @@ class RagSearchRequest(BaseModel):
 class ContextItem(BaseModel):
     ocrIngredient: str
     ingredientName: str
+    safetyLevel: Optional[str] = None
     description: Optional[str] = None
     similarityScore: float
 
@@ -96,8 +100,8 @@ def search_rag_context(
         keyword_match = (
             db.query(IngredientKnowledge)
             .filter(
-                (IngredientKnowledge.alias_name == ingredient)
-                | (IngredientKnowledge.standard_name == ingredient)
+                (IngredientKnowledge.raw_name == ingredient)
+                | (IngredientKnowledge.canonical_name == ingredient)
             )
             .first()
         )
@@ -106,7 +110,8 @@ def search_rag_context(
             contexts.append(
                 ContextItem(
                     ocrIngredient=ingredient,
-                    ingredientName=keyword_match.standard_name,
+                    ingredientName=keyword_match.canonical_name,
+                    safetyLevel=keyword_match.category,
                     description=keyword_match.description,
                     similarityScore=1.0,
                 )
@@ -119,14 +124,15 @@ def search_rag_context(
                 """
                 SELECT
                     id,
-                    ingredient_id,
-                    standard_name,
-                    alias_name,
+                    raw_name,
+                    canonical_name,
+                    category,
                     description,
-                    1 - (embedding <=> CAST(:vec AS vector)) AS similarity
+                    caution,
+                    1 - (embedding <=> CAST(:vec AS vector(1024))) AS similarity
                 FROM ingredient_knowledge
                 WHERE embedding IS NOT NULL
-                ORDER BY embedding <=> CAST(:vec AS vector)
+                ORDER BY embedding <=> CAST(:vec AS vector(1024))
                 LIMIT :top_k
                 """
             )
@@ -139,13 +145,17 @@ def search_rag_context(
                 contexts.append(
                     ContextItem(
                         ocrIngredient=ingredient,
-                        ingredientName=row.standard_name,
+                        ingredientName=row.canonical_name or row.raw_name,
+                        safetyLevel=row.category,
                         description=row.description,
                         similarityScore=round(float(row.similarity), 4),
                     )
                 )
         except Exception as error:
-            print(f"'{ingredient}' 임베딩 검색 중 오류: {error}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"'{ingredient}' 임베딩 검색 중 오류가 발생했습니다.",
+            ) from error
 
     return RagSearchResponse(
         analysisId=request.analysisId,
