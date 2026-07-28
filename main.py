@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from chat_schemas import RagChatRequest, RagChatResponse
+from chat_service import generate_chat_response
 from clova_client import get_clova_embedding
 from database import IngredientKnowledge, ensure_pgvector_extension, get_db
 from ingredient_extractor import extract_ingredients
@@ -163,3 +165,8 @@ def search_rag_context(
         totalCount=len(contexts),
         contexts=contexts,
     )
+
+
+@app.post("/api/v1/rag/chat", response_model=RagChatResponse)
+def chat_rag_context(request: RagChatRequest) -> RagChatResponse:
+    return generate_chat_response(request)
