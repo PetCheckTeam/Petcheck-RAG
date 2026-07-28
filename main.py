@@ -13,6 +13,8 @@ from chat_service import generate_chat_response
 from clova_client import get_clova_embedding
 from database import IngredientKnowledge, ensure_pgvector_extension, get_db
 from ingredient_extractor import extract_ingredients
+from pet_chat_schemas import PetChatRequest
+from pet_chat_service import generate_pet_chat_response
 
 # .env 파일 로드
 load_dotenv()
@@ -170,3 +172,8 @@ def search_rag_context(
 @app.post("/api/v1/rag/chat", response_model=RagChatResponse)
 def chat_rag_context(request: RagChatRequest) -> RagChatResponse:
     return generate_chat_response(request)
+
+
+@app.post("/api/v1/rag/pet-chat", response_model=RagChatResponse)
+def pet_chat_rag_context(request: PetChatRequest) -> RagChatResponse:
+    return generate_pet_chat_response(request)
