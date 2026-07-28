@@ -1,16 +1,33 @@
 import os
 from typing import Optional
-from fastapi import FastAPI, Depends, HTTPException
+
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from dotenv import load_dotenv
 
-from database import get_db, IngredientKnowledge
 from clova_client import get_clova_embedding
+from database import IngredientKnowledge, get_db
 from ingredient_extractor import extract_ingredients
 
+# .env 파일 로드
 load_dotenv()
+
+# 필수 환경변수 존재 여부 체크
+REQUIRED_ENV_VARS = [
+    "DB_HOST",
+    "DB_PORT",
+    "DB_NAME",
+    "DB_USER",
+    "DB_PASSWORD",
+    "CLOVA_STUDIO_API_KEY",
+    "DATABASE_URL",
+]
+missing_vars = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
+if missing_vars:
+    print(f"⚠️ 경고: 다음 환경변수가 설정되지 않았습니다: {', '.join(missing_vars)}")
+
 
 app = FastAPI(
     title="PetCheck RAG Engine API",
@@ -30,7 +47,6 @@ class RagSearchRequest(BaseModel):
 class ContextItem(BaseModel):
     ocrIngredient: str
     ingredientName: str
-    safetyLevel: Optional[str] = None
     description: Optional[str] = None
     similarityScore: float
 
@@ -46,17 +62,23 @@ class RagSearchResponse(BaseModel):
 def deduplicate_ingredients(ingredients: list[str]) -> list[str]:
     seen = set()
     result = []
+
     for item in ingredients:
         cleaned = item.strip()
-        if cleaned and cleaned not in seen:
-            seen.add(cleaned)
+        key = cleaned.casefold()
+        if cleaned and key not in seen:
+            seen.add(key)
             result.append(cleaned)
+
     return result
 
 
-# --- API 엔드포인트 (명세서 규격) ---
+# --- API 엔드포인트 ---
 @app.post("/api/v1/rag/search", response_model=RagSearchResponse)
-def search_rag_context(request: RagSearchRequest, db: Session = Depends(get_db)):
+def search_rag_context(
+    request: RagSearchRequest,
+    db: Session = Depends(get_db),
+) -> RagSearchResponse:
     # 1. OCR 텍스트에서 성분 추출 및 중복 제거
     raw_ingredients = extract_ingredients(request.ocrText)
     ingredients = deduplicate_ingredients(raw_ingredients)
@@ -69,66 +91,61 @@ def search_rag_context(request: RagSearchRequest, db: Session = Depends(get_db))
 
     contexts: list[ContextItem] = []
 
-    # 2. 각 추출 성분에 대해 하이브리드 검색 (키워드 매칭 -> 벡터 유사도 검색)
+    # 2. 키워드 정확 일치 검색 후, 일치하지 않으면 벡터 유사도 검색
     for ingredient in ingredients:
-        matched_item = None
-        score = 0.0
-
-        # Step A: Exact / Keyword Match
         keyword_match = (
             db.query(IngredientKnowledge)
             .filter(
-                (IngredientKnowledge.raw_name == ingredient)
-                | (IngredientKnowledge.canonical_name == ingredient)
+                (IngredientKnowledge.alias_name == ingredient)
+                | (IngredientKnowledge.standard_name == ingredient)
             )
             .first()
         )
 
         if keyword_match:
-            matched_item = keyword_match
-            score = 1.0
-        else:
-            # Step B: Vector Similarity Match
-            try:
-                query_vector = get_clova_embedding(ingredient)
-                sql = text(
-                    """
-                    SELECT id, raw_name, canonical_name, category, description, caution,
-                           1 - (embedding <=> :vec::vector) AS similarity
-                    FROM ingredient_knowledge
-                    ORDER BY embedding <=> :vec::vector
-                    LIMIT :top_k
-                    """
-                )
-                results = db.execute(
-                    sql, {"vec": str(query_vector), "top_k": request.topK}
-                ).fetchall()
-
-                for row in results:
-                    contexts.append(
-                        ContextItem(
-                            ocrIngredient=ingredient,
-                            ingredientName=row.canonical_name or row.raw_name,
-                            safetyLevel=row.category,
-                            description=row.description,
-                            similarityScore=round(float(row.similarity), 4),
-                        )
-                    )
-                continue
-            except Exception as e:
-                print(f"'{ingredient}' 임베딩 검색 중 오류: {e}")
-
-        # 키워드 매칭 결과 처리
-        if matched_item:
             contexts.append(
                 ContextItem(
                     ocrIngredient=ingredient,
-                    ingredientName=matched_item.canonical_name or matched_item.raw_name,
-                    safetyLevel=matched_item.category,
-                    description=matched_item.description,
-                    similarityScore=round(score, 4),
+                    ingredientName=keyword_match.standard_name,
+                    description=keyword_match.description,
+                    similarityScore=1.0,
                 )
             )
+            continue
+
+        try:
+            query_vector = get_clova_embedding(ingredient)
+            sql = text(
+                """
+                SELECT
+                    id,
+                    ingredient_id,
+                    standard_name,
+                    alias_name,
+                    description,
+                    1 - (embedding <=> CAST(:vec AS vector)) AS similarity
+                FROM ingredient_knowledge
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> CAST(:vec AS vector)
+                LIMIT :top_k
+                """
+            )
+            results = db.execute(
+                sql,
+                {"vec": str(query_vector), "top_k": request.topK},
+            ).fetchall()
+
+            for row in results:
+                contexts.append(
+                    ContextItem(
+                        ocrIngredient=ingredient,
+                        ingredientName=row.standard_name,
+                        description=row.description,
+                        similarityScore=round(float(row.similarity), 4),
+                    )
+                )
+        except Exception as error:
+            print(f"'{ingredient}' 임베딩 검색 중 오류: {error}")
 
     return RagSearchResponse(
         analysisId=request.analysisId,

@@ -124,41 +124,35 @@ def extract_ingredient_details(ocr_text: str) -> dict[str, object]:
         "confidence": calculate_extraction_confidence(method, ingredients),
     }
 
-
 def extract_ingredient_section(
     ocr_text: str, max_chars: int = 1200
 ) -> tuple[str, str]:
     text = normalize_ocr_text(ocr_text)
-    start_match = find_start(text)
+    
+    # 💡 안전하게 예외 처리를 감싸서 500 에러를 원천 차단합니다.
+    try:
+        start_match = find_start(text)
+    except Exception:
+        start_match = None
+
     if not start_match:
-        return "", "START_NOT_FOUND"
+        section = text.strip()
+        method = "FULL_TEXT_FALLBACK"
+    else:
+        section = text[start_match.end() :].strip()
+        method = "START_FOUND"
 
-    section = text[start_match.end() :].strip()
-
-    if start_match.group(0).lower() == "ingredients":
-        section = skip_english_instruction_noise(section)
+        try:
+            if start_match.group(0).lower() == "ingredients":
+                section = skip_english_instruction_noise(section)
+        except Exception:
+            pass
 
     soft_end = find_soft_end(section)
     if soft_end is not None:
         return section[:soft_end].strip(), "SOFT_END_FOUND"
 
-    return section[:max_chars].strip(), "MAX_CHARS_FALLBACK"
-
-
-def find_start(text: str) -> Optional[re.Match[str]]:
-    matches = []
-    for pattern in [r"사용한\s*원료의\s*명칭", r"원료의\s*명칭"]:
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            matches.append(match)
-
-    for match in re.finditer(r"(?im)^\s*INGREDIENTS\s*$", text):
-        matches.append(match)
-
-    if not matches:
-        return None
-
-    return max(matches, key=lambda match: match.start())
+    return section[:max_chars].strip(), method
 
 
 def find_soft_end(text: str) -> Optional[int]:

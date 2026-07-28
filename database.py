@@ -19,11 +19,10 @@ class IngredientKnowledge(Base):
     __tablename__ = "ingredient_knowledge"
 
     id = Column(Integer, primary_key=True, index=True)
-    raw_name = Column(String(255), nullable=False)
-    canonical_name = Column(String(255), nullable=False)
-    category = Column(String(100), nullable=True)
+    ingredient_id = Column(Integer, nullable=False, index=True)
+    standard_name = Column(String(255), nullable=False, index=True)
+    alias_name = Column(String(255), nullable=False, index=True)
     description = Column(Text, nullable=True)
-    caution = Column(Text, nullable=True)
     embedding = Column(Vector(1024), nullable=True)
 
 
