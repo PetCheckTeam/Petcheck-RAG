@@ -4,10 +4,20 @@ from typing import Optional
 START_PATTERNS = [
     r"사용한\s*원료의\s*명칭",
     r"원료의\s*명칭",
+    r"원재료\s*명",
     r"\bINGREDIENTS\b",
 ]
 
 SOFT_END_PATTERNS = [
+    r"제조\s*원",
+    r"제조\s*사",
+    r"제조\s*업체",
+    r"원산지",
+    r"제조\s*연월일",
+    r"제조\s*일자",
+    r"소비\s*기한",
+    r"수입\s*판매\s*원",
+    r"급여\s*방법",
     r"주의\s*사항",
     r"등록\s*성분\s*량",
     r"보관\s*방법",
@@ -124,35 +134,45 @@ def extract_ingredient_details(ocr_text: str) -> dict[str, object]:
         "confidence": calculate_extraction_confidence(method, ingredients),
     }
 
+
 def extract_ingredient_section(
     ocr_text: str, max_chars: int = 1200
 ) -> tuple[str, str]:
     text = normalize_ocr_text(ocr_text)
-    
-    # 💡 안전하게 예외 처리를 감싸서 500 에러를 원천 차단합니다.
-    try:
-        start_match = find_start(text)
-    except Exception:
-        start_match = None
+
+    start_match = find_start(text)
 
     if not start_match:
-        section = text.strip()
-        method = "FULL_TEXT_FALLBACK"
-    else:
-        section = text[start_match.end() :].strip()
-        method = "START_FOUND"
+        return "", "START_NOT_FOUND"
 
-        try:
-            if start_match.group(0).lower() == "ingredients":
-                section = skip_english_instruction_noise(section)
-        except Exception:
-            pass
+    section = text[start_match.end() :].strip()
+    method = "START_FOUND"
+
+    if re.match(r"ingredients\b", start_match.group(0), flags=re.IGNORECASE):
+        section = skip_english_instruction_noise(section)
 
     soft_end = find_soft_end(section)
     if soft_end is not None:
         return section[:soft_end].strip(), "SOFT_END_FOUND"
 
     return section[:max_chars].strip(), method
+
+
+def find_start(text: str) -> Optional[re.Match[str]]:
+    matches = []
+    for pattern in START_PATTERNS:
+        match = re.search(
+            rf"{pattern}\s*[:：]?",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            matches.append(match)
+
+    if not matches:
+        return None
+
+    return min(matches, key=lambda match: match.start())
 
 
 def find_soft_end(text: str) -> Optional[int]:
@@ -173,11 +193,16 @@ def split_ingredients(section_text: str) -> list[str]:
         return []
 
     text = normalize_separators(section_text)
+    soft_end = find_soft_end(text)
+    if soft_end is not None:
+        text = text[:soft_end]
+
     candidates = split_by_comma_outside_parentheses(text)
     ingredients = []
 
     for candidate in candidates:
         item = clean_ingredient_name(candidate)
+        item = remove_ingredient_title(item)
         item = trim_sentence_tail(item)
         item = clean_ingredient_name(item)
 
@@ -196,12 +221,12 @@ def split_by_comma_outside_parentheses(text: str) -> list[str]:
     depth = 0
 
     for char in text:
-        if char in "([":
+        if char in "([（":
             depth += 1
-        elif char in ")]" and depth > 0:
+        elif char in ")]）" and depth > 0:
             depth -= 1
 
-        if char == "," and depth == 0:
+        if char in ",，" and depth == 0:
             result.append("".join(current).strip())
             current = []
         else:
@@ -211,6 +236,17 @@ def split_by_comma_outside_parentheses(text: str) -> list[str]:
         result.append("".join(current).strip())
 
     return result
+
+
+def remove_ingredient_title(text: str) -> str:
+    title_pattern = "|".join(f"(?:{pattern})" for pattern in START_PATTERNS)
+    return re.sub(
+        rf"^\s*(?:{title_pattern})\s*[:：]?\s*",
+        "",
+        text,
+        count=1,
+        flags=re.IGNORECASE,
+    )
 
 
 def trim_sentence_tail(text: str) -> str:
@@ -299,10 +335,7 @@ def clean_ingredient_name(name: str) -> str:
 
 
 def normalize_ocr_text(text: str) -> str:
-    text = text.replace("\r", "\n")
-    text = re.sub(r"[ \t]+", " ", text)
-    text = re.sub(r"\n+", "\n", text)
-    return text.strip()
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def normalize_separators(text: str) -> str:
