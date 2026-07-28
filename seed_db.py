@@ -1,144 +1,146 @@
-# -*- coding: utf-8 -*-
-import os
-import http.client
+from __future__ import annotations
+
+import csv
 import json
-import time
-import psycopg2
-from dotenv import load_dotenv
+from pathlib import Path
 
-load_dotenv()
+from clova_client import get_clova_embedding
+from database import (
+    Base,
+    IngredientKnowledge,
+    SessionLocal,
+    engine,
+    ensure_pgvector_extension,
+)
 
-# ==========================================
-# 1. DB 및 API 설정 정보
-# ==========================================
-DB_CONFIG = {
-    "dbname": "petcheck_db",
-    "user": "postgres",
-    "password": "postgres",
-    "host": "localhost",
-    "port": "5432"
-}
 
-HOST = "clovastudio.stream.ntruss.com"
-API_KEY = os.getenv("CLOVA_API_KEY", "Bearer nv-YOUR_ACTUAL_API_KEY_HERE")
-REQUEST_ID = os.getenv("CLOVA_REQUEST_ID", "petcheck-seed-001")
+DEFAULT_CSV_PATH = (
+    Path(__file__).resolve().parent
+    / "data"
+    / "petcheck_ingredient_knowledge_full.csv"
+)
 
-# ==========================================
-# 2. 샘플 데이터
-# ==========================================
-SAMPLE_INGREDIENTS = [
-    {
-        "name": "닭고기",
-        "safety": "주의",
-        "description": "고단백 영양원이지만 일부 강아지/고양이에게 식이 알레르기 반응(가려움증, 눈물 등)을 유발할 수 있습니다."
-    },
-    {
-        "name": "BHA",
-        "safety": "위험",
-        "description": "합성 보존제(방부제)로, 장기 복용 시 독성 논란 및 발암 가능성이 제기되는 성분이므로 주의가 필요합니다."
-    },
-    {
-        "name": "소고기",
-        "safety": "안전",
-        "description": "필수 아미노산과 철분이 풍부한 우수한 단백질원입니다. 단, 우육 알레르기가 있는 경우 제한해야 합니다."
-    },
-    {
-        "name": "연어",
-        "safety": "안전",
-        "description": "오메가-3 지방산이 풍부하여 피모 건강과 염증 완화에 매우 도움을 주는 단백질원입니다."
-    },
-    {
-        "name": "콩 (대두)",
-        "safety": "주의",
-        "description": "식물성 단백질원이나, 일부 반려동물에게 소화 불량이나 알레르기를 유발할 수 있습니다."
-    }
-]
+REQUIRED_CSV_COLUMNS = (
+    "raw_name",
+    "canonical_name",
+    "category",
+    "description",
+    "caution",
+    "embedding",
+)
 
-# ==========================================
-# 3. Clova Embedding API 호출 함수
-# ==========================================
-def get_clova_embedding(text: str):
-    headers = {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Authorization': API_KEY,
-        'X-NCP-CLOVASTUDIO-REQUEST-ID': REQUEST_ID
-    }
 
-    payload = {"text": text}
+def init_db() -> None:
+    ensure_pgvector_extension()
+    print("DB 테이블 생성 중...")
+    Base.metadata.create_all(bind=engine)
+    print("DB 테이블 생성 완료.")
 
-    try:
-        conn = http.client.HTTPSConnection(HOST)
-        conn.request('POST', '/v1/api-tools/embedding/v2', json.dumps(payload), headers)
-        response = conn.getresponse()
-        result = json.loads(response.read().decode(encoding='utf-8'))
-        conn.close()
 
-        if result.get('status', {}).get('code') == '20000':
-            return result['result']['embedding']
-        else:
-            print(f"❌ API 오류 발생: {result}")
-            return None
-    except Exception as e:
-        print(f"❌ 통신 예외 발생: {e}")
+def parse_embedding(value: str) -> list[float] | None:
+    """CSV에 벡터 값이 있으면 파싱하고, 비어 있으면 None을 반환합니다."""
+    if not value or not value.strip():
         return None
 
-# ==========================================
-# 4. DB 적재 실행 로직
-# ==========================================
-def run_seed():
-    print("🚀 PostgreSQL DB 연결 중...")
+    embedding = json.loads(value)
+    if not isinstance(embedding, list) or len(embedding) != 1024:
+        raise ValueError("embedding은 1024개 숫자로 구성된 JSON 배열이어야 합니다.")
+
+    return [float(number) for number in embedding]
+
+
+def seed_data(csv_file_path: str | Path = DEFAULT_CSV_PATH) -> None:
+    csv_path = Path(csv_file_path)
+    if not csv_path.exists():
+        required = ", ".join(REQUIRED_CSV_COLUMNS)
+        raise FileNotFoundError(
+            "원료 지식 CSV 파일을 찾을 수 없습니다.\n"
+            f"확인한 경로: {csv_path.resolve()}\n"
+            f"필수 컬럼: {required}"
+        )
+
+    db = SessionLocal()
+
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
-        cur = conn.cursor()
-        
-        # 1) pgvector 확장 설치 및 테이블 자동 생성
-        cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS ingredient_knowledge (
-                id SERIAL PRIMARY KEY,
-                ingredient_name VARCHAR(100) NOT NULL,
-                safety_level VARCHAR(20),
-                description TEXT NOT NULL,
-                embedding VECTOR(1024)
-            );
-        """)
-        conn.commit()
-        print("✅ 테이블 및 pgvector 익스텐션 확인 완료!")
+        with csv_path.open("r", encoding="utf-8-sig", newline="") as csv_file:
+            reader = csv.DictReader(csv_file)
+            actual_columns = set(reader.fieldnames or [])
+            data_list = list(reader)
 
-    except Exception as e:
-        print(f"❌ DB 연결/설정 실패: {e}")
-        return
+        missing_columns = set(REQUIRED_CSV_COLUMNS) - actual_columns
+        if missing_columns:
+            missing = ", ".join(sorted(missing_columns))
+            required = ", ".join(REQUIRED_CSV_COLUMNS)
+            raise ValueError(
+                f"CSV 필수 컬럼이 누락되었습니다: {missing}. "
+                f"파일 경로: {csv_path.resolve()}. 필수 컬럼: {required}"
+            )
 
-    print("🌱 데이터 임베딩 생성 및 DB 적재 시작...\n")
+        print(f"총 {len(data_list)}개의 원료 데이터를 삽입/업데이트합니다.")
 
-    for idx, item in enumerate(SAMPLE_INGREDIENTS, 1):
-        name = item["name"]
-        safety = item["safety"]
-        desc = item["description"]
+        for row_number, item in enumerate(data_list, start=2):
+            try:
+                raw_name = item["raw_name"].strip()
+                canonical_name = item["canonical_name"].strip()
+                category = item["category"].strip() or None
+                description = item["description"].strip() or None
+                caution = item["caution"].strip() or None
 
-        text_to_embed = f"{name}: {desc}"
-        
-        print(f"[{idx}/{len(SAMPLE_INGREDIENTS)}] '{name}' 임베딩 변환 중...")
-        embedding_vector = get_clova_embedding(text_to_embed)
+                if not raw_name or not canonical_name:
+                    raise ValueError("raw_name과 canonical_name은 비어 있을 수 없습니다.")
 
-        if embedding_vector:
-            vector_str = str(embedding_vector)
-            
-            insert_query = """
-                INSERT INTO ingredient_knowledge (ingredient_name, safety_level, description, embedding)
-                VALUES (%s, %s, %s, %s::vector);
-            """
-            cur.execute(insert_query, (name, safety, desc, vector_str))
-            conn.commit()
-            print(f"  └ ✅ DB 저장 완료!")
-        else:
-            print(f"  └ ⚠️ 저장 실패 (임베딩 생성 오류)")
+                embedding = parse_embedding(item["embedding"])
+                if embedding is None:
+                    text_to_embed = (
+                        f"원문 원료명: {raw_name}\n"
+                        f"표준 원료명: {canonical_name}\n"
+                        f"분류: {category or ''}\n"
+                        f"설명: {description or ''}\n"
+                        f"주의사항: {caution or ''}"
+                    )
+                    embedding = get_clova_embedding(text_to_embed)
 
-        time.sleep(0.2)
+                existing = (
+                    db.query(IngredientKnowledge)
+                    .filter(IngredientKnowledge.raw_name == raw_name)
+                    .first()
+                )
 
-    cur.close()
-    conn.close()
-    print("\n🎉 모든 데이터가 성공적으로 DB에 적재되었습니다!")
+                if existing:
+                    existing.canonical_name = canonical_name
+                    existing.category = category
+                    existing.description = description
+                    existing.caution = caution
+                    existing.embedding = embedding
+                    print(f"업데이트 완료: {raw_name} -> {canonical_name}")
+                else:
+                    db.add(
+                        IngredientKnowledge(
+                            raw_name=raw_name,
+                            canonical_name=canonical_name,
+                            category=category,
+                            description=description,
+                            caution=caution,
+                            embedding=embedding,
+                        )
+                    )
+                    print(f"새로 추가 완료: {raw_name} -> {canonical_name}")
+            except Exception as error:
+                raise ValueError(
+                    f"CSV {row_number}번째 줄 처리 실패: {error}"
+                ) from error
+
+        db.commit()
+        print("모든 데이터 시딩 작업이 완료되었습니다!")
+
+    except Exception as error:
+        db.rollback()
+        print(f"시딩 중 오류 발생: {error}")
+        raise
+    finally:
+        db.close()
+
 
 if __name__ == "__main__":
-    run_seed()
+    init_db()
+    seed_data()

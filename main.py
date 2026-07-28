@@ -1,203 +1,165 @@
 import os
-import requests
-<<<<<<< HEAD
-from dotenv import load_dotenv
-=======
->>>>>>> f5779457e8f47b01271930ef17bec89b929a0394
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
-from typing import Optional, List
-from sqlalchemy import create_engine, Column, Integer, String, Text
-from sqlalchemy.orm import declarative_base, sessionmaker
-from pgvector.sqlalchemy import Vector
+from contextlib import asynccontextmanager
+from typing import Optional
 
-<<<<<<< HEAD
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from clova_client import get_clova_embedding
+from database import IngredientKnowledge, ensure_pgvector_extension, get_db
+from ingredient_extractor import extract_ingredients
+
+# .env 파일 로드
 load_dotenv()
 
-=======
->>>>>>> f5779457e8f47b01271930ef17bec89b929a0394
+# 필수 환경변수 존재 여부 체크
+REQUIRED_ENV_VARS = [
+    "CLOVA_STUDIO_API_KEY",
+    "DATABASE_URL",
+]
+missing_vars = [var for var in REQUIRED_ENV_VARS if not os.getenv(var)]
+if missing_vars:
+    print(f"⚠️ 경고: 다음 환경변수가 설정되지 않았습니다: {', '.join(missing_vars)}")
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    ensure_pgvector_extension()
+    yield
+
+
 app = FastAPI(
-    title="PetCheck RAG Engine",
-    description="Clova Embedding v2 기반 성분 지식 RAG 서버",
-    version="1.0.0"
+    title="PetCheck RAG Engine API",
+    description="OCR 원료를 추출하고 Clova Embedding과 pgvector로 검색합니다.",
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
-# ==========================================
-<<<<<<< HEAD
-# 1. 환경 변수 및 설정 값
-# ==========================================
-# Docker PostgreSQL (계정: postgres / 비번: postgres)
-DB_URL = os.getenv(
-    "DATABASE_URL", 
-    "postgresql://postgres:postgres@localhost:5432/petcheck_db"
-)
 
-# Clova Studio API 설정
-CLOVA_EMBEDDING_URL = "https://clovastudio.stream.ntruss.com/v1/api-tools/embedding/v2"
-# 발급받으신 API Key를 넣으세요 ('Bearer ' 붙여서)
-API_KEY = os.getenv("CLOVA_API_KEY", "Bearer nv-YOUR_ACTUAL_API_KEY_HERE")
-REQUEST_ID = os.getenv("CLOVA_REQUEST_ID", "126186fac4564c9b8d9d4054f08186aa")
-=======
-# 1. 환경 변수 및 설정 값 (발급받은 키로 교체)
-# ==========================================
-# PostgreSQL 접속 주소
-DB_URL = os.getenv("DATABASE_URL", "postgresql://user:password@localhost:5432/petcheck_db")
-
-# Clova Studio API 설정
-CLOVA_EMBEDDING_URL = "https://clovastudio.stream.ntruss.com/v1/api-tools/embedding/v2"
-CLOVA_API_KEY = os.getenv("CLOVA_API_KEY", "Bearer nv-YOUR_API_KEY_HERE")  # 'Bearer ' 꼭 포함
-CLOVA_GW_KEY = os.getenv("CLOVA_GW_KEY", "YOUR_APIGW_KEY_HERE")
-CLOVA_REQUEST_ID = os.getenv("CLOVA_REQUEST_ID", "YOUR_REQUEST_ID_HERE")
->>>>>>> f5779457e8f47b01271930ef17bec89b929a0394
-
-# DB 세션 생성
-engine = create_engine(DB_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
-
-# ==========================================
-<<<<<<< HEAD
-# 2. PostgreSQL DB 테이블 매핑 (ingredient_knowledge)
-=======
-# 2. PostgreSQL DB 테이블 매핑
->>>>>>> f5779457e8f47b01271930ef17bec89b929a0394
-# ==========================================
-class IngredientKnowledge(Base):
-    __tablename__ = "ingredient_knowledge"
-
-    id = Column(Integer, primary_key=True, index=True)
-    ingredient_name = Column(String(100), nullable=False)
-    safety_level = Column(String(20))
-    description = Column(Text, nullable=False)
-<<<<<<< HEAD
-    # Clova Embedding v2 (1024차원)
-=======
-    # Clova Embedding v2 결과값은 1024차원 배열입니다.
->>>>>>> f5779457e8f47b01271930ef17bec89b929a0394
-    embedding = Column(Vector(1024))
-
-# ==========================================
-# 3. Clova Studio Embedding API 호출 함수
-# ==========================================
-def get_clova_embedding(text: str) -> List[float]:
-    """Clova Studio Embedding v2 API를 호출해 텍스트를 1024차원 벡터로 변환합니다."""
-    headers = {
-        "Authorization": CLOVA_API_KEY,
-        "X-NCP-CLOVASTUDIO-REQUEST-ID": CLOVA_REQUEST_ID,
-<<<<<<< HEAD
-        "Content-Type": "application/json"
-    }
-
-=======
-        "X-NCP-APIGW-API-KEY": CLOVA_GW_KEY,
-        "Content-Type": "application/json"
-    }
-    
->>>>>>> f5779457e8f47b01271930ef17bec89b929a0394
-    payload = {
-        "text": text
-    }
-
-    try:
-        response = requests.post(CLOVA_EMBEDDING_URL, json=payload, headers=headers, timeout=10)
-        
-        if response.status_code == 200:
-            result_data = response.json()
-<<<<<<< HEAD
-            if result_data.get("status", {}).get("code") == "20000":
-                return result_data["result"]["embedding"]
-            else:
-                raise Exception(f"API Internal Error: {result_data}")
-        else:
-            raise Exception(f"HTTP Error ({response.status_code}): {response.text}")
-=======
-            # Clova 응답의 result -> embedding (1024개 Float 리스트)
-            return result_data["result"]["embedding"]
-        else:
-            raise Exception(f"API Error ({response.status_code}): {response.text}")
->>>>>>> f5779457e8f47b01271930ef17bec89b929a0394
-            
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Clova Embedding API Call Failed: {str(e)}")
-
-# ==========================================
-# 4. Request / Response DTO
-# ==========================================
+# --- DTO (Pydantic 스키마) ---
 class RagSearchRequest(BaseModel):
     analysisId: int
-    ocrText: str
-    topK: Optional[int] = 3
+    ocrText: str = Field(min_length=1)
+    topK: int = Field(default=1, ge=1, le=10)
     petType: Optional[str] = "DOG"
 
+
 class ContextItem(BaseModel):
+    ocrIngredient: str
     ingredientName: str
-    safetyLevel: str
-    description: str
+    safetyLevel: Optional[str] = None
+    description: Optional[str] = None
     similarityScore: float
+
 
 class RagSearchResponse(BaseModel):
     analysisId: int
+    extractedIngredients: list[str]
     totalCount: int
-    contexts: List[ContextItem]
+    contexts: list[ContextItem]
 
-# ==========================================
-# 5. RAG 검색 API 엔드포인트
-# ==========================================
+
+# --- 보조 함수: 중복 성분 제거 ---
+def deduplicate_ingredients(ingredients: list[str]) -> list[str]:
+    seen = set()
+    result = []
+
+    for item in ingredients:
+        cleaned = item.strip()
+        key = cleaned.casefold()
+        if cleaned and key not in seen:
+            seen.add(key)
+            result.append(cleaned)
+
+    return result
+
+
+# --- API 엔드포인트 ---
 @app.post("/api/v1/rag/search", response_model=RagSearchResponse)
-async def search_rag_context(request: RagSearchRequest):
-    db = SessionLocal()
-    try:
-<<<<<<< HEAD
-        # ① OCR 텍스트 1024차원 벡터 변환
-        query_vector = get_clova_embedding(request.ocrText)
+def search_rag_context(
+    request: RagSearchRequest,
+    db: Session = Depends(get_db),
+) -> RagSearchResponse:
+    # 1. OCR 텍스트에서 성분 추출 및 중복 제거
+    raw_ingredients = extract_ingredients(request.ocrText)
+    ingredients = deduplicate_ingredients(raw_ingredients)
 
-        # ② pgvector 코사인 거리(Cosine Distance) 기반 유사도 검색
-=======
-        # ① 실시간 들어온 OCR 텍스트를 Clova API로 1024차원 벡터 변환
-        query_vector = get_clova_embedding(request.ocrText)
-
-        # ② pgvector 코사인 거리(Cosine Distance) 기반 검색
-        # (거리값이 0에 가까울수록 유사도가 높은 성분)
->>>>>>> f5779457e8f47b01271930ef17bec89b929a0394
-        results = db.query(
-            IngredientKnowledge,
-            IngredientKnowledge.embedding.cosine_distance(query_vector).label("distance")
-        ).order_by("distance").limit(request.topK).all()
-
-        contexts = []
-        for item, distance in results:
-<<<<<<< HEAD
-            # Cosine Distance -> Similarity Score (0~1)
-=======
-            # Cosine Distance를 0~1 사이의 Similarity Score로 변환
->>>>>>> f5779457e8f47b01271930ef17bec89b929a0394
-            similarity_score = round(1.0 - float(distance), 4)
-            
-            contexts.append(
-                ContextItem(
-                    ingredientName=item.ingredient_name,
-                    safetyLevel=item.safety_level,
-                    description=item.description,
-                    similarityScore=similarity_score
-                )
-            )
-
-        return RagSearchResponse(
-            analysisId=request.analysisId,
-            totalCount=len(contexts),
-            contexts=contexts
+    if not ingredients:
+        raise HTTPException(
+            status_code=422,
+            detail="OCR 텍스트에서 원료명을 찾지 못했습니다.",
         )
 
-<<<<<<< HEAD
-    except HTTPException:
-        raise
-=======
->>>>>>> f5779457e8f47b01271930ef17bec89b929a0394
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"RAG Search Execution Error: {str(e)}")
-    finally:
-        db.close()
+    contexts: list[ContextItem] = []
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8100, reload=True)
+    # 2. 키워드 정확 일치 검색 후, 일치하지 않으면 벡터 유사도 검색
+    for ingredient in ingredients:
+        keyword_match = (
+            db.query(IngredientKnowledge)
+            .filter(
+                (IngredientKnowledge.raw_name == ingredient)
+                | (IngredientKnowledge.canonical_name == ingredient)
+            )
+            .first()
+        )
+
+        if keyword_match:
+            contexts.append(
+                ContextItem(
+                    ocrIngredient=ingredient,
+                    ingredientName=keyword_match.canonical_name,
+                    safetyLevel=keyword_match.category,
+                    description=keyword_match.description,
+                    similarityScore=1.0,
+                )
+            )
+            continue
+
+        try:
+            query_vector = get_clova_embedding(ingredient)
+            sql = text(
+                """
+                SELECT
+                    id,
+                    raw_name,
+                    canonical_name,
+                    category,
+                    description,
+                    caution,
+                    1 - (embedding <=> CAST(:vec AS vector(1024))) AS similarity
+                FROM ingredient_knowledge
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> CAST(:vec AS vector(1024))
+                LIMIT :top_k
+                """
+            )
+            results = db.execute(
+                sql,
+                {"vec": str(query_vector), "top_k": request.topK},
+            ).fetchall()
+
+            for row in results:
+                contexts.append(
+                    ContextItem(
+                        ocrIngredient=ingredient,
+                        ingredientName=row.canonical_name or row.raw_name,
+                        safetyLevel=row.category,
+                        description=row.description,
+                        similarityScore=round(float(row.similarity), 4),
+                    )
+                )
+        except Exception as error:
+            raise HTTPException(
+                status_code=502,
+                detail=f"'{ingredient}' 임베딩 검색 중 오류가 발생했습니다.",
+            ) from error
+
+    return RagSearchResponse(
+        analysisId=request.analysisId,
+        extractedIngredients=ingredients,
+        totalCount=len(contexts),
+        contexts=contexts,
+    )
